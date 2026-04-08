@@ -15,7 +15,6 @@ from config import PLAID_CLIENT_ID, PLAID_SECRET, PLAID_ENV, ACCESS_TOKENS
 
 _ENV_MAP = {
     "sandbox": plaid.Environment.Sandbox,
-    "development": plaid.Environment.Development,
     "production": plaid.Environment.Production,
 }
 
