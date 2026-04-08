@@ -26,9 +26,9 @@ def _previous_month(today: date) -> tuple[int, int]:
     return last_month.year, last_month.month
 
 
-def _month_date_range(year: int, month: int) -> tuple[str, str]:
+def _month_date_range(year: int, month: int) -> tuple[date, date]:
     last_day = calendar.monthrange(year, month)[1]
-    return f"{year}-{month:02d}-01", f"{year}-{month:02d}-{last_day:02d}"
+    return date(year, month, 1), date(year, month, last_day)
 
 
 def run(year: int | None = None, month: int | None = None) -> str:
@@ -41,7 +41,7 @@ def run(year: int | None = None, month: int | None = None) -> str:
     start_date, end_date = _month_date_range(year, month)
 
     print(f"\n Personal Finance Analyzer")
-    print(f"  Report period : {month_label}  ({start_date} → {end_date})")
+    print(f"  Report period : {month_label}  ({start_date.isoformat()} → {end_date.isoformat()})")
     print(f"  Run date      : {today.isoformat()}\n")
 
     # Step 1 — Fetch transactions

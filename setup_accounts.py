@@ -4,108 +4,147 @@ One-time Plaid account linking script.
 Run this script once per account (Bank 1, Bank 2, PayPal) to obtain
 a Plaid access token, then add that token to your .env file.
 
+In SANDBOX mode this script automatically generates test access tokens —
+no browser or real bank credentials are needed.
+
+In PRODUCTION mode it prints a Plaid Link URL for you to complete in a browser.
+
 Usage:
     python setup_accounts.py
 """
 
-import webbrowser
-import requests
-from config import PLAID_CLIENT_ID, PLAID_SECRET, PLAID_HOST, PLAID_ENV
+import plaid
+from plaid.api import plaid_api
+from plaid.model.sandbox_public_token_create_request import SandboxPublicTokenCreateRequest
+from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
+from plaid.model.link_token_create_request import LinkTokenCreateRequest
+from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
+from plaid.model.products import Products
+from plaid.model.country_code import CountryCode
 
-_PRODUCTS = ["transactions"]
-_COUNTRY_CODES = ["US"]
+from config import PLAID_CLIENT_ID, PLAID_SECRET, PLAID_ENV
+
+_ENV_MAP = {
+    "sandbox": plaid.Environment.Sandbox,
+    "development": plaid.Environment.Development,
+    "production": plaid.Environment.Production,
+}
+
+# Plaid sandbox institution IDs for testing
+_SANDBOX_INSTITUTIONS = {
+    "Bank 1": "ins_109508",   # First Platypus Bank
+    "Bank 2": "ins_109511",   # Tartan Bank
+    "PayPal": "ins_132243",   # PayPal (sandbox)
+}
+
+_ENV_KEYS = {
+    "Bank 1": "PLAID_ACCESS_TOKEN_BANK1",
+    "Bank 2": "PLAID_ACCESS_TOKEN_BANK2",
+    "PayPal": "PLAID_ACCESS_TOKEN_PAYPAL",
+}
 
 
-def _post(endpoint: str, payload: dict) -> dict:
-    url = f"{PLAID_HOST}{endpoint}"
-    payload = {**payload, "client_id": PLAID_CLIENT_ID, "secret": PLAID_SECRET}
-    response = requests.post(url, json=payload)
-    response.raise_for_status()
-    return response.json()
+def _build_client() -> plaid_api.PlaidApi:
+    configuration = plaid.Configuration(
+        host=_ENV_MAP.get(PLAID_ENV, plaid.Environment.Sandbox),
+        api_key={"clientId": PLAID_CLIENT_ID, "secret": PLAID_SECRET},
+    )
+    return plaid_api.PlaidApi(plaid.ApiClient(configuration))
 
 
-def create_link_token(user_id: str = "local-user") -> str:
-    data = _post("/link/token/create", {
-        "user": {"client_user_id": user_id},
-        "client_name": "Personal Finance Analyzer",
-        "products": _PRODUCTS,
-        "country_codes": _COUNTRY_CODES,
-        "language": "en",
-    })
-    return data["link_token"]
+def _sandbox_get_token(client: plaid_api.PlaidApi, account_name: str) -> str:
+    """
+    In sandbox mode: automatically create and exchange a public token
+    without needing a browser or real credentials.
+    """
+    institution_id = _SANDBOX_INSTITUTIONS[account_name]
+
+    # Create a sandbox public token for the test institution
+    create_response = client.sandbox_public_token_create(
+        SandboxPublicTokenCreateRequest(
+            institution_id=institution_id,
+            initial_products=[Products("transactions")],
+        )
+    )
+    public_token = create_response["public_token"]
+
+    # Exchange the public token for a permanent access token
+    exchange_response = client.item_public_token_exchange(
+        ItemPublicTokenExchangeRequest(public_token=public_token)
+    )
+    return exchange_response["access_token"]
 
 
-def exchange_public_token(public_token: str) -> str:
-    data = _post("/item/public_token/exchange", {"public_token": public_token})
-    return data["access_token"]
+def _production_get_token(client: plaid_api.PlaidApi, account_name: str) -> str:
+    """
+    In production mode: create a Link token and walk the user through
+    pasting back the public_token after completing the Plaid Link flow.
+    """
+    link_response = client.link_token_create(
+        LinkTokenCreateRequest(
+            user=LinkTokenCreateRequestUser(client_user_id="local-user"),
+            client_name="Personal Finance Analyzer",
+            products=[Products("transactions")],
+            country_codes=[CountryCode("US")],
+            language="en",
+        )
+    )
+    link_token = link_response["link_token"]
+    link_url = (
+        f"https://cdn.plaid.com/link/v2/stable/link.html"
+        f"?isWebview=true&token={link_token}"
+    )
+
+    print(f"\nOpen this URL in your browser to connect {account_name}:")
+    print(f"\n  {link_url}\n")
+    print("Complete the Plaid Link flow (log in to your bank).")
+
+    public_token = input("Paste the public_token here: ").strip()
+    if not public_token:
+        raise ValueError(f"No public_token provided for {account_name}.")
+
+    exchange_response = client.item_public_token_exchange(
+        ItemPublicTokenExchangeRequest(public_token=public_token)
+    )
+    return exchange_response["access_token"]
 
 
-def main():
+def main() -> None:
     print("=" * 60)
     print("Plaid Account Linking — Personal Finance Analyzer")
     print("=" * 60)
-    print(f"Environment: {PLAID_ENV}\n")
+    print(f"Environment : {PLAID_ENV}")
+    if PLAID_ENV == "sandbox":
+        print("Mode        : SANDBOX (automatic — no browser needed)\n")
+    else:
+        print("Mode        : PRODUCTION (browser required)\n")
 
+    client = _build_client()
     accounts = ["Bank 1", "Bank 2", "PayPal"]
-    env_keys = {
-        "Bank 1": "PLAID_ACCESS_TOKEN_BANK1",
-        "Bank 2": "PLAID_ACCESS_TOKEN_BANK2",
-        "PayPal": "PLAID_ACCESS_TOKEN_PAYPAL",
-    }
-
     results: dict[str, str] = {}
 
     for account_name in accounts:
-        print(f"\n--- Linking: {account_name} ---")
-        input(f"Press ENTER to generate a link token for {account_name}...")
-
-        link_token = create_link_token()
-        print(f"\nLink token created: {link_token[:30]}...")
-
-        if PLAID_ENV == "sandbox":
-            # In sandbox, use Plaid's hosted Link UI
-            link_url = f"https://cdn.plaid.com/link/v2/stable/link.html?isWebview=true&token={link_token}"
-            print(f"\nOpen this URL in your browser to connect {account_name}:")
-            print(f"\n  {link_url}\n")
-            print("In sandbox mode, use these test credentials:")
-            print("  Institution: Select any test institution (e.g. 'Plaid Test')")
-            print("  Username: user_good")
-            print("  Password: pass_good\n")
-        else:
-            link_url = f"https://cdn.plaid.com/link/v2/stable/link.html?isWebview=true&token={link_token}"
-            print(f"\nOpen this URL in your browser to connect {account_name}:")
-            print(f"\n  {link_url}\n")
-
+        print(f"Linking: {account_name}...")
         try:
-            webbrowser.open(link_url)
-        except Exception:
-            pass  # headless environment
+            if PLAID_ENV == "sandbox":
+                token = _sandbox_get_token(client, account_name)
+            else:
+                token = _production_get_token(client, account_name)
+            results[account_name] = token
+            print(f"  ✓ Token obtained for {account_name}\n")
+        except Exception as exc:
+            print(f"  ✗ Failed to link {account_name}: {exc}\n")
 
-        public_token = input(
-            "After completing the Plaid Link flow, paste the public_token here: "
-        ).strip()
-
-        if not public_token:
-            print(f"Skipping {account_name} — no token provided.")
-            continue
-
-        access_token = exchange_public_token(public_token)
-        results[account_name] = access_token
-        print(f"\n✓ Access token obtained for {account_name}.")
-
-    print("\n" + "=" * 60)
+    print("=" * 60)
     print("Add the following lines to your .env file:")
     print("=" * 60)
     for account_name, token in results.items():
-        key = env_keys[account_name]
-        print(f"{key}={token}")
+        print(f"{_ENV_KEYS[account_name]}={token}")
 
-    if len(results) < len(accounts):
-        missing = [a for a in accounts if a not in results]
-        print(f"\nNote: Skipped accounts: {', '.join(missing)}")
-        print("Re-run this script to link them later.")
-
-    print("\nSetup complete. Run 'python main.py' to generate your first report.")
+    if results:
+        print("\nSetup complete. Run 'python main.py' to generate your first report.")
+    else:
+        print("\nNo accounts were linked. Check your PLAID_CLIENT_ID and PLAID_SECRET.")
 
 
 if __name__ == "__main__":
